@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: vulnscanner_postgres
+    environment:
+      POSTGRES_DB: vulnscanner_db
+      POSTGRES_USER: vulnscanner
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - vulnscanner_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: vulnscanner_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - vulnscanner_network
+
+  zap:
+    image: owasp/zap2docker-stable
+    container_name: vulnscanner_zap
+    command: zap.sh -daemon -host 0.0.0.0 -port 8090 -config api.key=change-this-key -config api.addrs.addr.name=.* -config api.addrs.addr.regex=true
+    ports:
+      - "8090:8090"
+    networks:
+      - vulnscanner_network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vulnscanner_backend
+    environment:
+      DATABASE_URL: postgresql://vulnscanner:password@postgres:5432/vulnscanner_db
+      REDIS_HOST: redis
+      ZAP_PROXY_HOST: zap
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - zap
+    volumes:
+      - ./backend:/app
+      - ./reports:/app/reports
+    networks:
+      - vulnscanner_network
+
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: vulnscanner_celery
+    command: celery -A tasks.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql://vulnscanner:password@postgres:5432/vulnscanner_db
+      REDIS_HOST: redis
+      ZAP_PROXY_HOST: zap
+    depends_on:
+      - postgres
+      - redis
+      - backend
+    volumes:
+      - ./backend:/app
+      - ./reports:/app/reports
+    networks:
+      - vulnscanner_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vulnscanner_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - vulnscanner_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  vulnscanner_network:
+    driver: bridge
